@@ -438,6 +438,22 @@ export async function importDocumentFromAsset(asset: DocumentPicker.DocumentPick
   return createStoredDocument(asset.name || 'imported-document.md', content);
 }
 
+/** Import a markdown document directly from a URI (e.g. from an Android Intent). */
+export async function importDocumentFromUri(uri: string) {
+  const content = await LegacyFileSystem.readAsStringAsync(uri, {
+      encoding: 'utf8',
+  });
+
+  let fileName = 'shared-document.md';
+  const uriParts = uri.split('/');
+  const lastPart = uriParts[uriParts.length - 1];
+  if (lastPart && lastPart.includes('.')) {
+      fileName = decodeURIComponent(lastPart);
+  }
+
+  return createStoredDocument(fileName, content);
+}
+
 /** Save edited markdown content and refresh its derived metadata. */
 export async function saveDocumentContent(documentId: string, content: string) {
   const snapshot = await loadAppSnapshot();
