@@ -438,20 +438,58 @@ export async function importDocumentFromAsset(asset: DocumentPicker.DocumentPick
   return createStoredDocument(asset.name || 'imported-document.md', content);
 }
 
-/** Import a markdown document directly from a URI (e.g. from an Android Intent). */
-export async function importDocumentFromUri(uri: string) {
-  const content = await LegacyFileSystem.readAsStringAsync(uri, {
-      encoding: 'utf8',
-  });
+/** Derive a best-effort file name from an incoming URI. */
+function deriveFileNameFromUri(uri: string) {
+  try {
+    const withoutQuery = uri.split('?')[0];
+    const uriParts = withoutQuery.split('/');
+    const lastPart = uriParts[uriParts.length - 1];
 
-  let fileName = 'shared-document.md';
-  const uriParts = uri.split('/');
-  const lastPart = uriParts[uriParts.length - 1];
-  if (lastPart && lastPart.includes('.')) {
-      fileName = decodeURIComponent(lastPart);
+    if (lastPart && lastPart.includes('.')) {
+      return decodeURIComponent(lastPart);
+    }
+  } catch {
+    // Fall through to the default name below.
   }
 
-  return createStoredDocument(fileName, content);
+  return 'shared-document.md';
+}
+
+/**
+ * Import a markdown document directly from a URI (e.g. from an Android share/VIEW intent).
+ *
+ * Android `content://` URIs cannot be read reliably with `readAsStringAsync`, so we first
+ * copy the shared file into the app cache to obtain a stable `file://` URI, then read it.
+ */
+export async function importDocumentFromUri(uri: string) {
+  const fileName = deriveFileNameFromUri(uri);
+  let readableUri = uri;
+  let cacheCopyUri: string | null = null;
+
+  if (uri.startsWith('content://')) {
+    const cacheDirectory = LegacyFileSystem.cacheDirectory;
+
+    if (!cacheDirectory) {
+      throw new Error('Cache directory is unavailable, cannot import the shared file.');
+    }
+
+    cacheCopyUri = `${cacheDirectory}import-${Date.now()}.md`;
+    await LegacyFileSystem.copyAsync({ from: uri, to: cacheCopyUri });
+    readableUri = cacheCopyUri;
+  }
+
+  try {
+    const content = await LegacyFileSystem.readAsStringAsync(readableUri, {
+      encoding: 'utf8',
+    });
+
+    return await createStoredDocument(fileName, content);
+  } finally {
+    if (cacheCopyUri) {
+      // Clean up the temporary copy; the document is persisted in the library directory.
+      await LegacyFileSystem.deleteAsync(cacheCopyUri, { idempotent: true }).catch(() => undefined);
+    }
+  }
 }
 
 /** Save edited markdown content and refresh its derived metadata. */

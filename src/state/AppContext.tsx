@@ -80,8 +80,10 @@ export function AppProvider({ children }: PropsWithChildren) {
 
   /** Import a markdown file through the native picker. */
   const importDocument = useCallback(async () => {
+    // Many file managers tag .md files as octet-stream or leave them untyped, so
+    // accept any file to keep them selectable; non-text content simply fails to read.
     const result = await DocumentPicker.getDocumentAsync({
-      type: ['text/markdown', 'text/plain', 'text/x-markdown'],
+      type: '*/*',
       copyToCacheDirectory: true,
       multiple: false,
     });
@@ -168,7 +170,7 @@ export function AppProvider({ children }: PropsWithChildren) {
 
   /** Save the reader font scale with a comfort-first clamp. */
   const setFontScale = useCallback(async (fontScale: number) => {
-    const nextScale = Math.min(Math.max(Number(fontScale.toFixed(2)), 0.85), 1.4);
+    const nextScale = Math.min(Math.max(Number(fontScale.toFixed(2)), 0.8), 2.5);
     setSettingsState((currentSettings) => ({ ...currentSettings, fontScale: nextScale }));
     await saveSettings({ fontScale: nextScale });
   }, []);

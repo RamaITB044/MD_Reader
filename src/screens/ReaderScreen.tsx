@@ -32,6 +32,10 @@ type ReaderScreenProps = NativeStackScreenProps<RootStackParamList, 'Reader'>;
 
 const { height: screenHeight, width: screenWidth } = Dimensions.get('window');
 
+// Keep these in sync with the clamp in AppContext.setFontScale.
+const MIN_FONT_SCALE = 0.8;
+const MAX_FONT_SCALE = 2.5;
+
 /** Render the immersive document reader with hidden chrome, gestures, and progress tracking. */
 export function ReaderScreen({ navigation, route }: ReaderScreenProps) {
   const { documents, setFontScale, setLastOpenedDocumentId, settings, updateProgress } = useAppContext();
@@ -42,11 +46,30 @@ export function ReaderScreen({ navigation, route }: ReaderScreenProps) {
   const [hasRestoredPosition, setHasRestoredPosition] = useState(false);
   const translateY = useSharedValue(0);
   const chromeVisibility = useSharedValue(1);
+  // Tracks live scroll position on the UI thread so the close gesture can tell
+  // whether we are at the very top of the document.
+  const scrollOffset = useSharedValue(0);
+  const nativeGesture = useMemo(() => Gesture.Native(), []);
 
   const document = useMemo(
     () => documents.find((item) => item.id === route.params.documentId),
     [documents, route.params.documentId]
   );
+
+  // Live font scale for pinch-to-zoom; renderScale drives layout, the shared
+  // value mirrors it for the gesture worklet, and changes persist on release.
+  const [renderScale, setRenderScale] = useState(settings.fontScale);
+  const liveScale = useSharedValue(settings.fontScale);
+  const pinchStartScale = useSharedValue(settings.fontScale);
+
+  // Reading progress (0-1) for the top progress bar, seeded from saved progress.
+  const readProgress = useSharedValue(document?.progress ?? 0);
+
+  useEffect(() => {
+    // Keep the live scale in sync when settings change (A-/A+ buttons, load).
+    liveScale.value = settings.fontScale;
+    setRenderScale(settings.fontScale);
+  }, [settings.fontScale, liveScale]);
 
   useEffect(() => {
     void setLastOpenedDocumentId(route.params.documentId);
@@ -111,14 +134,21 @@ export function ReaderScreen({ navigation, route }: ReaderScreenProps) {
   const closeReader = () => navigation.goBack();
 
   const closeGesture = Gesture.Pan()
-    .activeOffsetY([12, 9999])
+    .activeOffsetY([18, 9999])
+    // Run alongside the ScrollView so normal scrolling is never blocked.
+    .simultaneousWithExternalGesture(nativeGesture)
     .onUpdate((event) => {
-      if (event.translationY > 0) {
+      // Only drag the reader away when the content is already at the top and the
+      // user is pulling downward; otherwise let the ScrollView own the gesture.
+      if (scrollOffset.value <= 0 && event.translationY > 0) {
         translateY.value = event.translationY;
       }
     })
     .onEnd((event) => {
-      if (event.translationY > 140 || event.velocityY > 950) {
+      const shouldDismiss =
+        translateY.value > 0 && (event.translationY > 140 || event.velocityY > 950);
+
+      if (shouldDismiss) {
         translateY.value = withTiming(screenHeight, { duration: 180 }, (finished) => {
           if (finished) {
             runOnJS(closeReader)();
@@ -133,7 +163,35 @@ export function ReaderScreen({ navigation, route }: ReaderScreenProps) {
     runOnJS(handleTap)(event.x, event.y);
   });
 
-  const gesture = Gesture.Simultaneous(closeGesture, tapGesture);
+  /** Reflect the live pinch scale into React state so the markdown re-flows. */
+  const applyRenderScale = (next: number) => setRenderScale(next);
+
+  /** Persist the final pinch scale once the gesture ends. */
+  const commitScale = (next: number) => {
+    void setFontScale(next);
+  };
+
+  const pinchGesture = Gesture.Pinch()
+    .simultaneousWithExternalGesture(nativeGesture)
+    .onStart(() => {
+      pinchStartScale.value = liveScale.value;
+    })
+    .onUpdate((event) => {
+      let next = pinchStartScale.value * event.scale;
+      next = Math.min(Math.max(next, MIN_FONT_SCALE), MAX_FONT_SCALE);
+      // Quantize to 0.05 steps so we re-render the document at most a few times.
+      next = Math.round(next * 20) / 20;
+
+      if (next !== liveScale.value) {
+        liveScale.value = next;
+        runOnJS(applyRenderScale)(next);
+      }
+    })
+    .onEnd(() => {
+      runOnJS(commitScale)(liveScale.value);
+    });
+
+  const gesture = Gesture.Simultaneous(closeGesture, tapGesture, pinchGesture);
 
   const readerAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: translateY.value }],
@@ -143,6 +201,10 @@ export function ReaderScreen({ navigation, route }: ReaderScreenProps) {
   const chromeAnimatedStyle = useAnimatedStyle(() => ({
     opacity: chromeVisibility.value,
     transform: [{ translateY: interpolate(chromeVisibility.value, [0, 1], [-14, 0]) }],
+  }));
+
+  const progressFillStyle = useAnimatedStyle(() => ({
+    width: `${Math.min(Math.max(readProgress.value, 0), 1) * 100}%`,
   }));
 
   if (!document) {
@@ -157,6 +219,10 @@ export function ReaderScreen({ navigation, route }: ReaderScreenProps) {
     <SafeAreaView style={[styles.safeArea, { backgroundColor: tokens.background }]}>
       <GestureDetector gesture={gesture}>
         <Animated.View style={[styles.readerShell, { backgroundColor: tokens.background }, readerAnimatedStyle]}>
+          <View style={[styles.progressTrack, { backgroundColor: tokens.progressTrack }]} pointerEvents="none">
+            <Animated.View style={[styles.progressFill, { backgroundColor: tokens.accent }, progressFillStyle]} />
+          </View>
+
           <Animated.View style={[styles.topChrome, chromeAnimatedStyle]}>
             <View style={[styles.topChromeInner, { backgroundColor: tokens.surface, borderColor: tokens.outline, shadowColor: tokens.shadow }]}>
               <Pressable onPress={() => navigation.goBack()} style={[styles.chromeButton, { backgroundColor: tokens.surfaceMuted }]}>
@@ -175,6 +241,7 @@ export function ReaderScreen({ navigation, route }: ReaderScreenProps) {
             </View>
           </Animated.View>
 
+          <GestureDetector gesture={nativeGesture}>
           <ScrollView
             ref={scrollViewRef}
             contentContainerStyle={styles.readerContent}
@@ -185,12 +252,14 @@ export function ReaderScreen({ navigation, route }: ReaderScreenProps) {
               }
             }}
             onScroll={({ nativeEvent }) => {
+              scrollOffset.value = nativeEvent.contentOffset.y;
               const totalScrollableHeight = Math.max(nativeEvent.contentSize.height - nativeEvent.layoutMeasurement.height, 1);
               const nextProgress = nativeEvent.contentOffset.y / totalScrollableHeight;
+              readProgress.value = Math.min(Math.max(nextProgress, 0), 1);
               queueProgressSave(nextProgress, nativeEvent.contentOffset.y);
             }}
             scrollEventThrottle={16}
-            showsVerticalScrollIndicator={false}
+            showsVerticalScrollIndicator={true}
           >
             <View style={[styles.readerIntroCard, { backgroundColor: tokens.surface, borderColor: tokens.outline, shadowColor: tokens.shadow }]}>
               <View style={[styles.readerIntroBar, { backgroundColor: tokens.secondary }]} />
@@ -205,14 +274,25 @@ export function ReaderScreen({ navigation, route }: ReaderScreenProps) {
                 </View>
               </View>
             </View>
-            <MarkdownContent content={document.content} fontScale={settings.fontScale} tokens={tokens} />
+            <MarkdownContent content={document.content} fontScale={renderScale} tokens={tokens} />
           </ScrollView>
+          </GestureDetector>
 
-          <Animated.View style={[styles.bottomChrome, chromeAnimatedStyle, { backgroundColor: tokens.surface, borderColor: tokens.outline, shadowColor: tokens.shadow }]}> 
-            <Pressable onPress={() => void setFontScale(settings.fontScale - 0.05)} style={[styles.bottomButton, { backgroundColor: tokens.surfaceMuted }]}>
+          <Animated.View style={[styles.bottomChrome, chromeAnimatedStyle, { backgroundColor: tokens.surface, borderColor: tokens.outline, shadowColor: tokens.shadow }]}>
+            <Pressable
+              onPress={() => void setFontScale(renderScale - 0.1)}
+              style={[styles.bottomButton, { backgroundColor: tokens.surfaceMuted }]}
+            >
               <Text style={[styles.bottomButtonLabel, { color: tokens.textPrimary }]}>A-</Text>
             </Pressable>
-            <Pressable onPress={() => void setFontScale(settings.fontScale + 0.05)} style={[styles.bottomButton, { backgroundColor: tokens.surfaceMuted }]}>
+            <View style={styles.zoomLabelWrap}>
+              <Text style={[styles.zoomLabel, { color: tokens.textPrimary }]}>{Math.round(renderScale * 100)}%</Text>
+              <Text style={[styles.zoomHint, { color: tokens.textMuted }]}>pinch to zoom</Text>
+            </View>
+            <Pressable
+              onPress={() => void setFontScale(renderScale + 0.1)}
+              style={[styles.bottomButton, { backgroundColor: tokens.surfaceMuted }]}
+            >
               <Text style={[styles.bottomButtonLabel, { color: tokens.textPrimary }]}>A+</Text>
             </Pressable>
             <Pressable onPress={openExportSheet} style={[styles.bottomButton, { backgroundColor: tokens.surfaceMuted }]}>
@@ -231,6 +311,17 @@ const styles = StyleSheet.create({
   },
   readerShell: {
     flex: 1,
+  },
+  progressTrack: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    zIndex: 3,
+  },
+  progressFill: {
+    height: '100%',
   },
   topChrome: {
     position: 'absolute',
@@ -355,7 +446,7 @@ const styles = StyleSheet.create({
   },
   bottomButton: {
     minHeight: 48,
-    minWidth: 72,
+    minWidth: 60,
     justifyContent: 'center',
     alignItems: 'center',
     borderRadius: 999,
@@ -364,6 +455,20 @@ const styles = StyleSheet.create({
   bottomButtonLabel: {
     fontFamily: fontFamilies.ui,
     fontSize: 14,
+  },
+  zoomLabelWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 64,
+  },
+  zoomLabel: {
+    fontFamily: fontFamilies.uiDisplay,
+    fontSize: 15,
+  },
+  zoomHint: {
+    fontFamily: fontFamilies.ui,
+    fontSize: 10,
+    marginTop: 2,
   },
   missingText: {
     fontFamily: fontFamilies.ui,

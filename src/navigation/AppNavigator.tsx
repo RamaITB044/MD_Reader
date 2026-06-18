@@ -4,6 +4,7 @@ import { createNativeStackNavigator, NativeStackNavigationProp } from '@react-na
 import * as Linking from 'expo-linking';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
 
 import { ReaderScreen } from '../screens/ReaderScreen';
 import { SearchScreen } from '../screens/SearchScreen';
@@ -20,30 +21,62 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 function IntentHandler() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { refreshLibrary, setLastOpenedDocumentId } = useAppContext();
+  const { tokens } = useThemeController();
   const incomingUrl = Linking.useURL();
   const [processedUrls, setProcessedUrls] = useState<Set<string>>(new Set());
+  const [isImporting, setIsImporting] = useState(false);
 
   useEffect(() => {
-    if (incomingUrl && !processedUrls.has(incomingUrl)) {
-      if (incomingUrl.startsWith('content://') || incomingUrl.startsWith('file://')) {
-        importDocumentFromUri(incomingUrl)
-          .then(async (newDoc) => {
-            setProcessedUrls((prev) => new Set(prev).add(incomingUrl));
-            await refreshLibrary();
-            await setLastOpenedDocumentId(newDoc.id);
-            navigation.navigate('Reader', { documentId: newDoc.id });
-          })
-          .catch((e) => {
-            console.error('Failed to import from Intent:', e);
-            setProcessedUrls((prev) => new Set(prev).add(incomingUrl));
-          });
-      } else {
-        setProcessedUrls((prev) => new Set(prev).add(incomingUrl));
-      }
+    if (!incomingUrl || processedUrls.has(incomingUrl)) {
+      return;
     }
+
+    // Mark as processed immediately so a re-render never starts a duplicate import.
+    setProcessedUrls((prev) => new Set(prev).add(incomingUrl));
+
+    if (!incomingUrl.startsWith('content://') && !incomingUrl.startsWith('file://')) {
+      return;
+    }
+
+    let cancelled = false;
+    setIsImporting(true);
+
+    importDocumentFromUri(incomingUrl)
+      .then(async (newDoc) => {
+        await refreshLibrary();
+        await setLastOpenedDocumentId(newDoc.id);
+        if (!cancelled) {
+          navigation.navigate('Reader', { documentId: newDoc.id });
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to import from intent:', error);
+        Alert.alert(
+          'Could not open file',
+          "This file couldn't be opened. Make sure it is a readable Markdown or text file and try again."
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsImporting(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [incomingUrl, processedUrls, refreshLibrary, setLastOpenedDocumentId, navigation]);
 
-  return null;
+  if (!isImporting) {
+    return null;
+  }
+
+  return (
+    <View style={[styles.importOverlay, { backgroundColor: tokens.background }]} pointerEvents="auto">
+      <ActivityIndicator size="large" color={tokens.accent} />
+      <Text style={[styles.importLabel, { color: tokens.textSecondary }]}>Opening file…</Text>
+    </View>
+  );
 }
 
 /** Render the app navigation stack with gesture-driven transitions and themed chrome. */
@@ -89,3 +122,16 @@ export function AppNavigator() {
     </>
   );
 }
+
+const styles = StyleSheet.create({
+  importOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1000,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 16,
+  },
+  importLabel: {
+    fontSize: 15,
+  },
+});

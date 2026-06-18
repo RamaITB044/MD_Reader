@@ -26,10 +26,20 @@
           "data": [
             { "scheme": "file", "mimeType": "text/markdown" },
             { "scheme": "content", "mimeType": "text/markdown" },
+            { "scheme": "file", "mimeType": "text/x-markdown" },
+            { "scheme": "content", "mimeType": "text/x-markdown" },
+            { "scheme": "file", "mimeType": "application/markdown" },
+            { "scheme": "content", "mimeType": "application/markdown" },
+            { "scheme": "file", "mimeType": "application/x-markdown" },
+            { "scheme": "content", "mimeType": "application/x-markdown" },
             { "scheme": "file", "mimeType": "text/plain" },
             { "scheme": "content", "mimeType": "text/plain" },
+            { "scheme": "file", "mimeType": "application/octet-stream" },
+            { "scheme": "content", "mimeType": "application/octet-stream" },
             { "scheme": "file", "pathPattern": ".*\\.md" },
-            { "scheme": "content", "pathPattern": ".*\\.md" }
+            { "scheme": "content", "pathPattern": ".*\\.md" },
+            { "scheme": "file", "pathPattern": ".*\\.markdown" },
+            { "scheme": "content", "pathPattern": ".*\\.markdown" }
           ]
         }
       ],
