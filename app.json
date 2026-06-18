@@ -2,7 +2,7 @@
   "expo": {
     "name": "MD_Reader",
     "slug": "MD_Reader",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -49,6 +49,7 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
+      "versionCode": 2,
       "package": "com.rocaro_india.MD_Reader"
     },
     "web": {
