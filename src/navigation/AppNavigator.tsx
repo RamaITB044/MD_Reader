@@ -3,7 +3,7 @@ import { useNavigation, NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator, NativeStackNavigationProp } from '@react-navigation/native-stack';
 import * as Linking from 'expo-linking';
 import { StatusBar } from 'expo-status-bar';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
 
 import { ReaderScreen } from '../screens/ReaderScreen';
@@ -23,31 +23,29 @@ function IntentHandler() {
   const { refreshLibrary, setLastOpenedDocumentId } = useAppContext();
   const { tokens } = useThemeController();
   const incomingUrl = Linking.useURL();
-  const [processedUrls, setProcessedUrls] = useState<Set<string>>(new Set());
+  // A ref (not state) so marking a URL as processed never retriggers this effect
+  // and cancels the in-flight import.
+  const processedUrlsRef = useRef<Set<string>>(new Set());
   const [isImporting, setIsImporting] = useState(false);
 
   useEffect(() => {
-    if (!incomingUrl || processedUrls.has(incomingUrl)) {
+    if (!incomingUrl || processedUrlsRef.current.has(incomingUrl)) {
       return;
     }
-
-    // Mark as processed immediately so a re-render never starts a duplicate import.
-    setProcessedUrls((prev) => new Set(prev).add(incomingUrl));
 
     if (!incomingUrl.startsWith('content://') && !incomingUrl.startsWith('file://')) {
       return;
     }
 
-    let cancelled = false;
+    // Mark as processed immediately so a re-render never starts a duplicate import.
+    processedUrlsRef.current.add(incomingUrl);
     setIsImporting(true);
 
     importDocumentFromUri(incomingUrl)
       .then(async (newDoc) => {
         await refreshLibrary();
         await setLastOpenedDocumentId(newDoc.id);
-        if (!cancelled) {
-          navigation.navigate('Reader', { documentId: newDoc.id });
-        }
+        navigation.navigate('Reader', { documentId: newDoc.id });
       })
       .catch((error) => {
         console.error('Failed to import from intent:', error);
@@ -57,15 +55,9 @@ function IntentHandler() {
         );
       })
       .finally(() => {
-        if (!cancelled) {
-          setIsImporting(false);
-        }
+        setIsImporting(false);
       });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [incomingUrl, processedUrls, refreshLibrary, setLastOpenedDocumentId, navigation]);
+  }, [incomingUrl, refreshLibrary, setLastOpenedDocumentId, navigation]);
 
   if (!isImporting) {
     return null;
